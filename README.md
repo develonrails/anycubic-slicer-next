@@ -2,7 +2,7 @@
 
 Appimage of the Anycubic Slicer next.
 
-Download at releases page.
+Download at [![GitHub release](https://img.shields.io/github/release/develonrails/anycubic-slicer-next.svg)](https://github.com/develonrails/anycubic-slicer-next/releases) page.
 
 My first ever appimage created so no guarantees given. So far all seems to work. 
 
