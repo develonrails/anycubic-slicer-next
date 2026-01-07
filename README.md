@@ -1,4 +1,4 @@
-# anycubic-slicer-next
+# Anycubic Slicer Next
 
 [![GitHub release](https://img.shields.io/github/release/develonrails/anycubic-slicer-next.svg)](https://github.com/develonrails/anycubic-slicer-next/releases)
 
