@@ -2,7 +2,7 @@
 
 [![GitHub release](https://img.shields.io/github/release/develonrails/anycubic-slicer-next.svg)](https://github.com/develonrails/anycubic-slicer-next/releases)
 
-Flatpak and Appimage of the Anycubic Slicer next.
+Flatpak and AppImage of the Anycubic Slicer next.
 
 Download at [releases](https://github.com/develonrails/anycubic-slicer-next/releases) page.
 
@@ -14,6 +14,6 @@ AppImage
  - Hit properties of file, enable "Execute as program"
  - Your good to go!
 
-My first ever appimage created so no guarantees given. So far all seems to work. 
+My first ever Flatpak/AppImage created so no guarantees given. So far all seems to work. 
 
 If this helps you please star the repo or support me on Ko-fi.
