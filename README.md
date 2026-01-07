@@ -12,4 +12,4 @@ Download at [releases](https://github.com/develonrails/anycubic-slicer-next/rele
 
 My first ever appimage created so no guarantees given. So far all seems to work. 
 
-If this helps you please star the repo.
+If this helps you please star the repo or support me on Ko-fi.
