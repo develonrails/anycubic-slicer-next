@@ -1,5 +1,7 @@
 # anycubic-slicer-next
 
+[![GitHub release](https://img.shields.io/github/release/develonrails/anycubic-slicer-next.svg)](https://github.com/develonrails/anycubic-slicer-next/releases)
+
 Appimage of the Anycubic Slicer next.
 
 Download at [![GitHub release](https://img.shields.io/github/release/develonrails/anycubic-slicer-next.svg)](https://github.com/develonrails/anycubic-slicer-next/releases) page.
