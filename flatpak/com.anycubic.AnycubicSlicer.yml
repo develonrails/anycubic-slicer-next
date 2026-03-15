@@ -1,0 +1,75 @@
+app-id: com.anycubic.AnycubicSlicer
+runtime: org.gnome.Platform
+runtime-version: '48'
+sdk: org.gnome.Sdk
+command: anycubic-slicer-wrapper
+branch: "1.3.9.3"
+
+finish-args:
+  # Display and IPC
+  - --share=ipc
+  - --socket=x11
+
+  # Audio access (for notifications/sounds)
+  - --socket=pulseaudio
+
+  # Network access for printer connectivity and cloud features
+  - --share=network
+
+  # OpenGL, camera, and device access
+  - --device=all
+
+  # File access for loading/saving models
+  - --filesystem=home
+
+  # GVFS access (GnomeVFS support)
+  - --filesystem=xdg-run/gvfs
+
+  # Removable media access (USB drives, SD cards)
+  - --filesystem=/run/media
+  - --filesystem=/media
+
+modules:
+  - name: anycubic-slicer
+    buildsystem: simple
+    build-commands:
+      # Extract the deb package
+      - ar x anycubicslicernext_1.3.96.deb
+      - tar xf data.tar.gz
+
+      # Install files to flatpak prefix
+      - cp -r usr/* /app/
+
+      # Copy resources to expected location
+      - mkdir -p /app/share/AnycubicSlicerNext
+      - cp -r /app/share/AnycubicSlicerNext/resources /app/resources || true
+
+      # Create wrapper script (modeled after OrcaSlicer's entrypoint)
+      - |
+        cat > /app/bin/anycubic-slicer-wrapper <<'WRAPPER'
+        #!/usr/bin/env sh
+
+        # NVIDIA DMABUF workaround (from OrcaSlicer)
+        # Only disable DMABUF renderer when running with NVIDIA drivers
+        grep -q org.freedesktop.Platform.GL.nvidia /.flatpak-info && export WEBKIT_DISABLE_DMABUF_RENDERER=1
+
+        # Locale fix to prevent segfaults on systems with non-standard locales
+        export LC_ALL=C.UTF-8
+
+        # Library path for bundled application libraries
+        export LD_LIBRARY_PATH="/app/lib:$LD_LIBRARY_PATH"
+
+        cd /app
+        exec /app/bin/AnycubicSlicerNext "$@"
+        WRAPPER
+      - chmod +x /app/bin/anycubic-slicer-wrapper
+
+      # Install desktop file and icon
+      - install -Dm644 /app/share/applications/AnycubicSlicer.desktop /app/share/applications/com.anycubic.AnycubicSlicer.desktop
+      - sed -i 's/Icon=.*/Icon=com.anycubic.AnycubicSlicer/' /app/share/applications/com.anycubic.AnycubicSlicer.desktop
+      - sed -i 's/Exec=.*/Exec=anycubic-slicer-wrapper %U/' /app/share/applications/com.anycubic.AnycubicSlicer.desktop
+      - install -Dm644 /app/share/AnycubicSlicerNext/resources/images/AnycubicSlicer_192px.png /app/share/icons/hicolor/192x192/apps/com.anycubic.AnycubicSlicer.png
+
+    sources:
+      - type: file
+        path: ubuntu-24-deb-file/anycubicslicernext_1.3.96.deb
