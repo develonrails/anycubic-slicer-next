@@ -102,6 +102,16 @@ Ensure these files are in the folder:
 - `anycubicslicernext.deb` — the downloaded .deb package
 - `com.anycubic.AnycubicSlicer.yml` — the Flatpak manifest
 
+```bash
+# Download the .deb straight into the workspace under the expected name
+DEB_FILENAME=$(curl -s https://cdn-universe-slicer.anycubic.com/prod/dists/noble/main/binary-amd64/Packages | grep "^Filename:" | awk '{print $2}')
+curl -L -o anycubicslicernext.deb "https://cdn-universe-slicer.anycubic.com/prod/${DEB_FILENAME}"
+```
+
+The .deb **must** be named `anycubicslicernext.deb` and sit next to the manifest — that is the
+name the manifest refers to. The name is deliberately version-free, so the manifest does not
+need editing when a new release comes out.
+
 ### Step 3: Build the Flatpak
 
 ```bash
@@ -209,9 +219,12 @@ When a new version is released:
 
 1. **Download the new .deb** (see "Checking for New Versions" above)
 2. **Check the real app version** with `strings` on the binary
-3. **Update the manifest** — change these fields:
-   - `branch:` — set to the new app version
-   - `sources: path:` — if you renamed the deb file
+3. **Update the manifest** — set `branch:` to the new app version. That is the only field that
+   changes; it has to match the branch you pass to `flatpak build-bundle` in step 4.
+   ```bash
+   sed -i "s/^branch:.*/branch: \"${NEW_VERSION}\"/" com.anycubic.AnycubicSlicer.yml
+   ```
+   The deb filename is not versioned, so `sources:` stays as-is.
 4. **Clean and rebuild**:
    ```bash
    rm -rf build repo .flatpak-builder
@@ -222,8 +235,8 @@ When a new version is released:
    ```
 5. **Test thoroughly**, then upload to GitHub
 
-**What stays the same**: Manifest structure, wrapper script, permissions, runtime
-**What changes**: `branch` field, deb file, output filename
+**What stays the same**: Manifest structure, wrapper script, permissions, runtime, deb filename
+**What changes**: `branch` field, the deb itself, output filename
 
 ## Troubleshooting
 

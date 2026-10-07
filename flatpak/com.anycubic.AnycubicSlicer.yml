@@ -34,7 +34,7 @@ modules:
     buildsystem: simple
     build-commands:
       # Extract the deb package
-      - ar x anycubicslicernext_1.3.96.deb
+      - ar x anycubicslicernext.deb
       - tar xf data.tar.gz
 
       # Install files to flatpak prefix
@@ -72,4 +72,4 @@ modules:
 
     sources:
       - type: file
-        path: ubuntu-24-deb-file/anycubicslicernext_1.3.96.deb
+        path: anycubicslicernext.deb
