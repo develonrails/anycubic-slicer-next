@@ -1,0 +1,10 @@
+# Build inputs and outputs (see the HOWTOs)
+anycubicslicernext.deb
+anycubicslicernext.deb.part
+/build/
+/repo/
+/out/
+.flatpak-builder/
+*.AppImage
+*.AppImage.zsync
+*.flatpak

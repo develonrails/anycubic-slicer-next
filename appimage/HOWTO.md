@@ -2,238 +2,119 @@
 
 This folder contains the source files and instructions for building the AnycubicSlicer AppImage from the Ubuntu 24.04 .deb package.
 
+Releases are built and published automatically by `.github/workflows/release.yml` whenever Anycubic publishes a new .deb (see [flatpak/HOWTO.md](../flatpak/HOWTO.md#publishing)). This page is for building one by hand and for understanding what the build does.
+
 ## System Requirements (For Running)
 
-The AppImage requires a modern Linux distribution with glibc 2.38+ and GLib 2.76+:
-- Ubuntu 23.10+, Fedora 39+, Debian 13 (Trixie)+, Arch, etc.
-- For older distros (e.g. Debian 12), use the Flatpak instead
+The AppImage requires a modern Linux distribution with glibc 2.38+ and GLib 2.80+:
+- Ubuntu 24.04+, Fedora 40+, Debian 13 (Trixie)+, Arch, etc.
+- For older distros (e.g. Debian 12, Ubuntu 22.04), use the Flatpak instead
 
 **System dependencies required:**
 - WebKit2GTK 4.1
 - GTK-3
 - GStreamer
-- GLib 2.76+
+- GLib 2.80+
 - glibc 2.38+
+- libtiff 6 (since 2.0.0.5)
 - OpenGL/EGL drivers
+- X11 or XWayland (the app forces `GDK_BACKEND=x11`)
+
+**FUSE:** the AppImage needs a setuid `fusermount3` (FUSE 3) **or** `fusermount` (FUSE 2), which every desktop distribution has. It does **not** need `libfuse2` / `libfuse.so.2`, unless it was built with the old AppImageKit tool (every release up to 1.3.9.4, see Troubleshooting).
 
 ## Prerequisites (For Building)
 
 - Linux system (any distribution)
-- `ar` command (usually in binutils package)
-- `tar` command
-- `curl` command
-- `appimagetool` (downloaded in build process)
-- `gh` CLI (for creating GitHub releases)
+- `ar` (binutils), `tar`, `curl`, `sha256sum`
+- `file` (`appimagetool` refuses to run without it)
+- `gpg` and `gpgv` (to check the AppImage runtime's signature)
 - Internet connection
+
+`appimagetool` itself is downloaded by the build script.
 
 ## Files Overview
 
-- `ubuntu-24-deb-file/` - Contains the original .deb package
-- `extracted/` - Extracted contents of the .deb package
-- `AnycubicSlicer.AppDir/` - AppImage directory structure
-- `AnycubicSlicer-<VERSION>-x86_64.AppImage` - Final AppImage (output)
+- `build.sh` - Builds the AppImage from the .deb
+- `AppRun` - Launch script, the AppImage's entry point
+- `AnycubicSlicer.desktop` - Desktop integration file
+- `../scripts/anycubic-deb.sh` - Finds and downloads the current .deb from Anycubic's APT repository
+- `../scripts/smoke-test.sh` - Starts the app on a virtual display to check it comes up
 
 ## Checking for New Versions
 
-Anycubic publishes .deb packages to their APT repository. The deb package version does **NOT** match the actual app version (e.g. deb version `1.3.96` contains app version `1.3.9.3`). Follow these steps to check for updates:
-
-### Step 1: Check the APT Packages file
-
-The Packages file contains the current deb metadata including the actual filename:
+Anycubic publishes .deb packages to their APT repository. The deb package version does **NOT** match the actual app version (e.g. deb version `2.0.06` contains app version `2.0.0.5`).
 
 ```bash
-curl -s https://cdn-universe-slicer.anycubic.com/prod/dists/noble/main/binary-amd64/Packages
+scripts/anycubic-deb.sh latest
 ```
 
-This will show fields like:
+prints the current entry of the APT `Packages` file:
 ```
-Package: anycubicslicernext
-Version: 1.3.96
-Filename: dists/noble/main/binary-amd64/develop_AnycubicSlicerNext-1.3.96_20260131_153250-Ubuntu_24_04_3_LTS.deb
+DEB_URL=https://cdn-universe-slicer.anycubic.com/prod/pool/main/a/anycubicslicernext/AnycubicSlicerNext_linux-v2.0.0.5-20260913065625.deb
+DEB_SHA256=fe087a56014ed25cdfe4c3c293b517adaee0a9b2e1ded79f5e394b7968817c15
+DEB_SIZE=153422098
+DEB_VERSION=2.0.06
 ```
 
 **Important notes:**
-- The `Filename` field contains the actual download path — it is NOT predictable from the version number alone
-- The filename may have a `develop_` prefix — this does NOT necessarily mean it's unstable
-- The `Version` field (e.g. `1.3.96`) does NOT match the actual app version (e.g. `1.3.9.3`)
+- The download path comes from the `Filename` field and is NOT predictable from the version number alone. It has moved before (from `dists/noble/...` to `pool/main/...`), and the filename may or may not have a `develop_` prefix.
+- The script insists on exactly one `anycubicslicernext` entry. If Anycubic ever lists several, it stops rather than guess which one is current.
 
-### Step 2: Download the .deb using the Filename from the Packages file
-
-```bash
-# The download URL is the repo base URL + the Filename from the Packages file
-curl -L -o anycubicslicernext.deb \
-  "https://cdn-universe-slicer.anycubic.com/prod/<FILENAME_FROM_PACKAGES_FILE>"
-```
-
-### Step 3: Check the actual app version
-
-The deb metadata version doesn't match the real app version. To find the actual version, extract the deb and check the binary:
+The real app version is in the deb's resources:
 
 ```bash
-mkdir -p /tmp/version-check && cd /tmp/version-check
-ar x /path/to/anycubicslicernext.deb
-tar xzf data.tar.gz
-strings usr/bin/AnycubicSlicerNext | grep "AnycubicSlicerNext/"
+scripts/anycubic-deb.sh app-version anycubicslicernext.deb
+# 2.0.0.5
 ```
 
-This will output something like:
-```
-AnycubicSlicerNext/1.3.9.3
-```
-
-That is the real app version to use for the AppImage filename and GitHub release.
+It reads `usr/share/AnycubicSlicerNext/resources/build-version.txt`. (Up to 1.3.9.4, `strings usr/bin/AnycubicSlicerNext | grep "AnycubicSlicerNext/"` also printed the version; since 2.0.0.5 it only prints the format string `AnycubicSlicerNext/V%s (%s) %s`.)
 
 ## Build Process
 
-### Step 1: Set up workspace
-
 ```bash
-# Use the real app version (from the binary, NOT the deb version)
-APP_VERSION="1.3.9.3"
-
-mkdir -p "Anycubic-Appimage ${APP_VERSION}/ubuntu-24-deb-file"
-cd "Anycubic-Appimage ${APP_VERSION}"
+scripts/anycubic-deb.sh download anycubicslicernext.deb   # downloads and checks the SHA256
+appimage/build.sh anycubicslicernext.deb                  # writes the AppImage and its .zsync here
 ```
 
-### Step 2: Download the .deb Package
+`build.sh` does the following:
+
+1. **Extract the .deb**: `ar x`, then `tar xf data.tar.*`.
+2. **Create the AppDir**: copy everything from `usr/`, drop the build leftovers the deb ships since 2.0.0.5 (`include/`, `lib/cmake/`, `lib/*.a`), and copy the resources to the AppDir root as well (see "Resources Location").
+3. **Add the desktop file, icon and `AppRun`** from this folder.
+4. **Download `appimagetool` and the AppImage runtime.** It uses the maintained `appimagetool` from [AppImage/appimagetool](https://github.com/AppImage/appimagetool), pinned by SHA256. It does **not** use the old one from `AppImage/AppImageKit`: that is marked obsolete and embeds a runtime that `dlopen()`s `libfuse.so.2`, so the AppImage fails on distributions that no longer ship FUSE 2 (issue #11). The new runtime from [AppImage/type2-runtime](https://github.com/AppImage/type2-runtime) is static and works with FUSE 3 or FUSE 2. It is taken from that project's rolling `continuous` release and checked against its signing key (`570C77ACEA40C0F1B758902CBF96CCA56490F695`) rather than a hash, so it picks up fixes without breaking the build.
+5. **Build the AppImage**, zstd-compressed, with update information embedded so AppImageUpdate and Gear Lever can update it from the latest GitHub release. `appimagetool` also writes the matching `.zsync`, which has to be uploaded to the release next to the AppImage.
+
+### Test the AppImage
 
 ```bash
-# First, get the filename from the Packages file
-DEB_FILENAME=$(curl -s https://cdn-universe-slicer.anycubic.com/prod/dists/noble/main/binary-amd64/Packages | grep "^Filename:" | awk '{print $2}')
-echo "Downloading: $DEB_FILENAME"
-
-# Download
-curl -L -o ubuntu-24-deb-file/anycubicslicernext.deb \
-  "https://cdn-universe-slicer.anycubic.com/prod/${DEB_FILENAME}"
+./AnycubicSlicer-2.0.0.5-x86_64.AppImage --appimage-version
+# AppImage runtime version: https://github.com/AppImage/type2-runtime/commit/<hash>
 ```
 
-### Step 3: Extract the .deb Package
+An AppImage built with the old AppImageKit tool prints `Version: 5735cc5` here instead.
 
+Run it from the command line to view logs:
 ```bash
-mkdir -p extracted
-cd extracted
-ar x ../ubuntu-24-deb-file/anycubicslicernext.deb
-tar xzf data.tar.gz
-cd ..
-```
-
-### Step 4: Create AppDir Structure
-
-```bash
-mkdir -p AnycubicSlicer.AppDir
-
-# Copy all files from usr/ to AppDir
-cp -r extracted/usr/* AnycubicSlicer.AppDir/
-
-# Copy desktop file and icon to AppDir root
-cp AnycubicSlicer.AppDir/share/applications/AnycubicSlicer.desktop AnycubicSlicer.AppDir/
-cp AnycubicSlicer.AppDir/share/AnycubicSlicerNext/resources/images/AnycubicSlicer.png AnycubicSlicer.AppDir/
-
-# Copy resources to AppDir root (important for the app to find them)
-cp -r AnycubicSlicer.AppDir/share/AnycubicSlicerNext/resources AnycubicSlicer.AppDir/
-```
-
-### Step 5: Modify Desktop File
-
-```bash
-sed -i 's|Icon=.*|Icon=AnycubicSlicer|' AnycubicSlicer.AppDir/AnycubicSlicer.desktop
-```
-
-### Step 6: Create AppRun Script
-
-```bash
-cat > AnycubicSlicer.AppDir/AppRun <<'EOF'
-#!/bin/bash
-DIR=$(readlink -f "$0" | xargs dirname)
-
-export LD_LIBRARY_PATH="$DIR/lib:$DIR/bin:$LD_LIBRARY_PATH"
-
-# FIXME: Slicer segfault workarounds (from OrcaSlicer)
-# 1) Slicer will segfault on systems where locale info is not as expected (i.e. Holo-ISO arch-based distro)
-export LC_ALL=C
-
-if [ "$XDG_SESSION_TYPE" = "wayland" ] && [ "$ZINK_DISABLE_OVERRIDE" != "1" ]; then
-    if command -v glxinfo >/dev/null 2>&1; then
-        RENDERER=$(glxinfo | grep "OpenGL renderer string:" | sed 's/.*: //')
-        if echo "$RENDERER" | grep -qi "NVIDIA"; then
-            if command -v nvidia-smi >/dev/null 2>&1; then
-                DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
-                DRIVER_MAJOR=$(echo "$DRIVER_VERSION" | cut -d. -f1)
-                [ "$DRIVER_MAJOR" -gt 555 ] && ZINK_FORCE_OVERRIDE=1
-            fi
-            if [ "$ZINK_FORCE_OVERRIDE" = "1" ]; then
-                export __GLX_VENDOR_LIBRARY_NAME=mesa
-                export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-                export MESA_LOADER_DRIVER_OVERRIDE=zink
-                export GALLIUM_DRIVER=zink
-                export WEBKIT_DISABLE_DMABUF_RENDERER=1
-            fi
-        fi
-    fi
-fi
-
-# Set resource path for the application to find its resources
-export ANYCUBIC_RESOURCES_PATH="$DIR/resources"
-
-# WebKit rendering fixes
-export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-export WEBKIT_DISABLE_DMABUF_RENDERER=1
-export WEBKIT_FORCE_COMPOSITING_MODE=1
-export WEBKIT_DISABLE_COMPOSITING_MODE=1
-
-exec "$DIR/bin/AnycubicSlicerNext" "$@"
-EOF
-
-chmod +x AnycubicSlicer.AppDir/AppRun
-```
-
-### Step 7: Download appimagetool
-
-```bash
-curl -L -o appimagetool "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-chmod +x appimagetool
-```
-
-### Step 8: Build the AppImage
-
-```bash
-ARCH=x86_64 ./appimagetool AnycubicSlicer.AppDir "AnycubicSlicer-${APP_VERSION}-x86_64.AppImage"
-```
-
-### Step 9: Test the AppImage
-
-```bash
-chmod +x "AnycubicSlicer-${APP_VERSION}-x86_64.AppImage"
-
-# Run it from the command line to view logs
-./"AnycubicSlicer-${APP_VERSION}-x86_64.AppImage"
+./AnycubicSlicer-2.0.0.5-x86_64.AppImage
 ```
 
 You should see output like:
 ```
-[2026-01-07 17:20:33.141739] [0x00007fc45bad9b00] [trace]   Initializing StaticPrintConfigs
+[2026-10-10 12:11:01.797875] [0x00007f56c71876c0] [trace]   Initializing StaticPrintConfigs
 add font of HarmonyOS_Sans_SC_Bold returns 1
 add font of HarmonyOS_Sans_SC_Regular returns 1
 add font of NanumGothic-Regular returns 1
 add font of NanumGothic-Bold returns 1
 ```
 
-If fonts return 1, everything is working correctly!
-
-### Step 10: Create GitHub Release
-
-```bash
-gh release create "${APP_VERSION}" \
-  --repo develonrails/anycubic-slicer-next \
-  --title "${APP_VERSION}" \
-  --notes "Anycubic Slicer Next as AppImage." \
-  "AnycubicSlicer-${APP_VERSION}-x86_64.AppImage"
-```
+If fonts return 1, everything is working correctly! `scripts/smoke-test.sh` checks the same thing headless (it needs `xvfb-run`): `APPIMAGE_EXTRACT_AND_RUN=1 scripts/smoke-test.sh ./AnycubicSlicer-*.AppImage`.
 
 ## Version History
 
 | App Version | Deb Version | Deb Filename | Date |
 |---|---|---|---|
+| 2.0.0.5 | 2.0.06 | `pool/main/a/anycubicslicernext/AnycubicSlicerNext_linux-v2.0.0.5-20260913065625.deb` | 2026-09-13 |
+| 1.3.9.4 | (unknown) | (unknown) | 2026-03-19 |
 | 1.3.9.3 | 1.3.96 | `develop_AnycubicSlicerNext-1.3.96_20260131_153250-Ubuntu_24_04_3_LTS.deb` | 2026-01-31 |
 | 1.3.9.1 | 1.3.91 | (unknown) | 2026-01 |
 | 1.3.7.3 | 1.3.7171 | `AnycubicSlicerNext-1.3.7171_20250928_162543-Ubuntu_24_04_2_LTS.deb` | 2025-09-28 |
@@ -245,8 +126,9 @@ gh release create "${APP_VERSION}" \
 Anycubic's deb packaging uses a **different version number** than the actual application. The deb `Version` field is a flattened/abbreviated form:
 - Deb `1.3.7171` = App `1.3.7.3` (roughly)
 - Deb `1.3.96` = App `1.3.9.3`
+- Deb `2.0.06` = App `2.0.0.5`
 
-Always check the binary with `strings` to get the real version for naming the AppImage and GitHub release.
+Always use `build-version.txt` (`scripts/anycubic-deb.sh app-version`) for naming the AppImage and GitHub release.
 
 ### Directory Structure
 
@@ -296,15 +178,6 @@ The resources **must** be at the AppDir root level (`resources/`) because:
 
 The binary can find its resources through the `LD_LIBRARY_PATH` and relative path lookups without needing to change the working directory.
 
-## Dependencies
-
-The AppImage relies on these system libraries (should be available on most Linux distros):
-- WebKit2GTK 4.1
-- GTK-3
-- GStreamer
-- OpenGL/EGL
-- Standard C/C++ libraries
-
 ## Troubleshooting
 
 ### Fonts not loading (returns 0)
@@ -324,7 +197,7 @@ The AppImage relies on these system libraries (should be available on most Linux
   - `WEBKIT_FORCE_COMPOSITING_MODE=1`
   - `WEBKIT_DISABLE_COMPOSITING_MODE=1`
 - These help with WebView rendering problems, UI glitches, and compositing issues
-- If you still experience issues, you can override these by setting different values before running
+- AppRun sets these unconditionally, so setting them yourself before running has no effect. To try other values, extract the AppImage (`--appimage-extract`), edit `squashfs-root/AppRun` and run that
 
 ### GLIBC_2.38 / GLIBCXX_3.4.32 / g_once_init_leave_pointer not found
 
@@ -335,11 +208,24 @@ version `GLIBCXX_3.4.32' not found
 undefined symbol: g_once_init_leave_pointer
 ```
 
-**Your distribution is too old.** The AppImage requires glibc 2.38+ and GLib 2.76+. Distributions like Debian 12 (Bookworm) do not meet these requirements. Use the Flatpak version instead for older distributions.
+**Your distribution is too old.** The AppImage requires glibc 2.38+ and GLib 2.80+ (`g_once_init_leave_pointer` arrived in GLib 2.80). Distributions like Debian 12 (Bookworm) and Ubuntu 22.04 do not meet these requirements. Use the Flatpak version instead for older distributions.
+
+### dlopen(): error loading libfuse.so.2 / AppImages require FUSE to run
+
+The AppImage was built with the obsolete AppImageKit `appimagetool`, whose runtime needs FUSE 2 (`libfuse.so.2`). Every release up to 1.3.9.4 is affected (`--appimage-version` prints `Version: 5735cc5`). Distributions that no longer ship FUSE 2 (e.g. Debian testing) cannot mount these AppImages. AppImages built by `build.sh` do not have this problem.
+
+Users of an affected AppImage can run it without FUSE:
+- `./AnycubicSlicer-<VERSION>-x86_64.AppImage --appimage-extract-and-run` (or `APPIMAGE_EXTRACT_AND_RUN=1 ./AnycubicSlicer-<VERSION>-x86_64.AppImage`): extracts to `/tmp` on every launch and deletes it on exit, so startup is slower
+- `./AnycubicSlicer-<VERSION>-x86_64.AppImage --appimage-extract` once, then run `./squashfs-root/AppRun`
+- Or install the distribution's FUSE 2 library where it still exists (e.g. `libfuse2t64` on Ubuntu 24.04)
+
+### AppImageLauncher: "Squashfs image uses (null) compression", "execv error" or "fuse: memory allocation failed"
+
+AppImageLauncher 2.2.0 intercepts every AppImage launch. It cannot read zstd-compressed AppImages and cannot start AppImages with the static type2-runtime, so AppImages built by `build.sh` fail when it is installed (the same applies to current OrcaSlicer and Bambu Studio AppImages). Update AppImageLauncher to v3.0.0-beta-3 or newer, or uninstall it.
 
 ### Missing library errors
 - The AppImage includes application-specific libraries
-- System libraries (GTK, WebKit) must be installed on the target system
+- System libraries (GTK, WebKit, libtiff) must be installed on the target system
 - For better portability, consider using the Flatpak version
 
 ### Camera permission requests
@@ -349,17 +235,16 @@ undefined symbol: g_once_init_leave_pointer
 
 ## File Sizes
 
-- Original .deb: ~126 MB
-- Final AppImage: ~126 MB
+- Original .deb: ~153 MB (2.0.0.5)
+- Final AppImage: ~144 MB (2.0.0.5, zstd)
 
 ## GitHub Repository
 
 Releases are published to: https://github.com/develonrails/anycubic-slicer-next
 
 Release format:
-- **Tag/Title**: The app version (e.g. `1.3.9.3`)
-- **Notes**: `Anycubic Slicer Next as AppImage.`
-- **Asset**: `AnycubicSlicer-<VERSION>-x86_64.AppImage`
+- **Tag/Title**: The app version (e.g. `2.0.0.5`)
+- **Assets**: `AnycubicSlicer-<VERSION>-x86_64.AppImage`, its `.zsync`, and `AnycubicSlicer-<VERSION>.flatpak`
 
 ## Credits
 

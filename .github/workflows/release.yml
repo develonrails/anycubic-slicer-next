@@ -1,0 +1,468 @@
+name: Release
+
+# Anycubic Slicer Next is published two ways, both rebuilt here whenever
+# Anycubic puts a new .deb in its APT repository:
+#
+# - A Flatpak repository on GitHub Pages, signed. People add it as a remote
+#   once, and from then on `flatpak update` and their software center bring
+#   every new version.
+# - A GitHub release per app version, with the AppImage (and the .zsync that
+#   lets AppImageUpdate and Gear Lever update it) and a single-file Flatpak
+#   bundle. The bundle carries the repository's URL and key, so installing it
+#   sets up the same updates.
+#
+# Anycubic offers no release feed, so this polls its Packages file every hour.
+# Whether to build is decided by comparing the current deb and packaging with
+# what was published last, not by what triggered the run: a push whose run was
+# cancelled in the queue, or that came during an outage at Anycubic, is still
+# picked up by the next hourly run.
+on:
+  schedule:
+    # Off the top of the hour: GitHub delays scheduled runs that pile up on :00.
+    - cron: '17 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - appimage/AppRun
+      - appimage/AnycubicSlicer.desktop
+      - appimage/build.sh
+      - flatpak/com.anycubic.AnycubicSlicer.yml
+      - flatpak/com.anycubic.AnycubicSlicer.metainfo.xml
+      - scripts/**
+      - .github/workflows/release.yml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build and publish even if nothing changed
+        type: boolean
+        default: false
+
+# Read-only by default. The flatpak and appimage jobs run Anycubic's binary,
+# which nobody here can inspect, so only the publish job gets to write.
+permissions:
+  contents: read
+
+# Two runs would otherwise race to rewrite the same repository, and one of
+# them would lose.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  APP_ID: com.anycubic.AnycubicSlicer
+  SITE_URL: https://develonrails.github.io/anycubic-slicer-next
+
+# Named explicitly, bash runs steps with -e and -o pipefail; left implicit it
+# would be -e alone, and a failing command in a pipe would go unnoticed.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      deb_url: ${{ steps.upstream.outputs.DEB_URL }}
+      deb_sha256: ${{ steps.upstream.outputs.DEB_SHA256 }}
+      deb_version: ${{ steps.upstream.outputs.DEB_VERSION }}
+      packaging: ${{ steps.packaging.outputs.hash }}
+      failed_key: ${{ steps.packaging.outputs.failed_key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Ask Anycubic's APT repository for the current deb
+        id: upstream
+        run: |
+          # Steps run under bash -e, so the status has to be caught in the if:
+          # a failing command substitution would end the step before rc is
+          # looked at.
+          if info=$(scripts/anycubic-deb.sh latest); then rc=0; else rc=$?; fi
+          # 75: Anycubic's server is down or timing out. That passes; failing
+          # the run would only mean an email every hour until it does.
+          if [ "$rc" -eq 75 ]; then
+            echo "::warning::Anycubic's APT repository is unreachable; the next run tries again."
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$rc" -eq 0 ] || exit "$rc"
+          printf '%s\n' "$info"
+          printf '%s\n' "$info" >> "$GITHUB_OUTPUT"
+          echo "reachable=true" >> "$GITHUB_OUTPUT"
+
+      # Everything that goes into a build. When any of it changes, the next
+      # run publishes, even if the deb is the same.
+      - name: Hash the packaging
+        id: packaging
+        env:
+          HASH: ${{ hashFiles('appimage/AppRun', 'appimage/AnycubicSlicer.desktop', 'appimage/build.sh', 'flatpak/com.anycubic.AnycubicSlicer.*', 'scripts/**', '.github/workflows/release.yml') }}
+          DEB_SHA256: ${{ steps.upstream.outputs.DEB_SHA256 }}
+        run: |
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "failed_key=build-failed-$DEB_SHA256-$HASH" >> "$GITHUB_OUTPUT"
+
+      - name: See what was published last
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # latest.env sits beside the repository on gh-pages. Until the first
+          # publish there is none (404), and everything counts as new. Any
+          # other failure must not be mistaken for that.
+          if published=$(gh api "repos/$GITHUB_REPOSITORY/contents/latest.env?ref=gh-pages" \
+                           -H 'Accept: application/vnd.github.raw' 2>"$RUNNER_TEMP/gh-api.err"); then
+            :
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/gh-api.err"; then
+            published=
+          else
+            cat "$RUNNER_TEMP/gh-api.err" >&2
+            exit 1
+          fi
+          deb=$(printf '%s\n' "$published" | sed -n 's/^DEB_SHA256=\([0-9a-f]\{64\}\)$/\1/p')
+          packaging=$(printf '%s\n' "$published" | sed -n 's/^PACKAGING=\([0-9a-f]\{64\}\)$/\1/p')
+          echo "Published: deb ${deb:-none}, packaging ${packaging:-none}"
+          echo "deb_sha256=$deb" >> "$GITHUB_OUTPUT"
+          echo "packaging=$packaging" >> "$GITHUB_OUTPUT"
+
+      # A build that fails would otherwise fail again every hour, and mail
+      # about it every hour. After one failure the same deb and packaging are
+      # left alone until either changes or someone forces a run.
+      - name: Check whether this build already failed
+        id: failed
+        if: steps.upstream.outputs.reachable == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .build-failed
+          key: ${{ steps.packaging.outputs.failed_key }}
+          lookup-only: true
+
+      - name: Decide
+        id: decide
+        env:
+          FORCE: ${{ inputs.force }}
+          REACHABLE: ${{ steps.upstream.outputs.reachable }}
+          DEB: ${{ steps.upstream.outputs.DEB_SHA256 }}
+          PUBLISHED_DEB: ${{ steps.published.outputs.deb_sha256 }}
+          PACKAGING: ${{ steps.packaging.outputs.hash }}
+          PUBLISHED_PACKAGING: ${{ steps.published.outputs.packaging }}
+          FAILED_BEFORE: ${{ steps.failed.outputs.cache-hit }}
+        run: |
+          build=false
+          if [ "$REACHABLE" != true ]; then
+            reason="Anycubic's repository is unreachable."
+          elif [ "$FORCE" = true ]; then
+            build=true; reason="Forced by hand."
+          elif [ "$DEB" = "$PUBLISHED_DEB" ] && [ "$PACKAGING" = "$PUBLISHED_PACKAGING" ]; then
+            reason="Nothing changed since the last publish."
+          elif [ "$FAILED_BEFORE" = true ]; then
+            reason="This deb and packaging failed to build before. Run the workflow by hand with force to try again."
+            echo "::warning::$reason"
+          elif [ "$DEB" != "$PUBLISHED_DEB" ]; then
+            build=true; reason="Anycubic published a new deb."
+          else
+            build=true; reason="The packaging changed."
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "$reason Build: $build" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  flatpak:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      # Pinned by digest: this job runs Anycubic's binary, and the publish job
+      # signs what it produces. To update, look up the current digest of the
+      # gnome-51 tag (or the next runtime's tag) and replace it here.
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51@sha256:78d969b18225ae107ca29497bf09c4a3f791e5f1838a9a912a529d0024fb6210
+      # flatpak-builder needs to set up its own sandbox, which it cannot do
+      # from inside an unprivileged container.
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download the deb
+        env:
+          DEB_URL: ${{ needs.check.outputs.deb_url }}
+          DEB_SHA256: ${{ needs.check.outputs.deb_sha256 }}
+        run: |
+          curl -fL --retry 3 -o flatpak/anycubicslicernext.deb "$DEB_URL"
+          echo "$DEB_SHA256  flatpak/anycubicslicernext.deb" | sha256sum -c -
+
+      - name: Build
+        run: |
+          flatpak-builder --repo=repo --force-clean --disable-rofiles-fuse \
+            build "flatpak/$APP_ID.yml"
+
+      # Installed the way a user would, then started on a virtual display.
+      # The runtime's image loaders run in a sandbox of their own, which takes
+      # the Flatpak portal on a session bus; a desktop has both, a container
+      # has to start them.
+      - name: Smoke test
+        run: |
+          [ -s /etc/machine-id ] || tr -d - < /proc/sys/kernel/random/uuid > /etc/machine-id
+          flatpak --user remote-add --no-gpg-verify built repo
+          flatpak --user install -y --noninteractive built "$APP_ID"
+          # shellcheck disable=SC2016 # $0 is expanded by the inner sh
+          scripts/smoke-test.sh dbus-run-session -- sh -c \
+            '/app/libexec/flatpak-portal --replace >/dev/null 2>&1 & sleep 2; exec flatpak run "$0"' "$APP_ID"
+
+      # Tarred because the repo is thousands of small objects, and uploading
+      # them one by one takes longer than the build did.
+      - name: Keep the OSTree repo this build produced
+        run: tar -cf flatpak-repo.tar repo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-repo
+          path: flatpak-repo.tar
+          compression-level: 0
+          retention-days: 1
+
+  appimage:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    # The oldest distribution the AppImage supports (glibc 2.38+, GLib 2.80+),
+    # so the smoke test runs against the oldest libraries it will meet.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      app_version: ${{ steps.build.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download the deb
+        env:
+          DEB_URL: ${{ needs.check.outputs.deb_url }}
+          DEB_SHA256: ${{ needs.check.outputs.deb_sha256 }}
+        run: |
+          curl -fL --retry 3 -o anycubicslicernext.deb "$DEB_URL"
+          echo "$DEB_SHA256  anycubicslicernext.deb" | sha256sum -c -
+
+      # The release is named after the AppImage build.sh made, so the version
+      # comes from its file name rather than from a second look into the deb.
+      - name: Build
+        id: build
+        run: |
+          mkdir out
+          appimage=$(appimage/build.sh anycubicslicernext.deb out)
+          version=${appimage##*/AnycubicSlicer-}
+          version=${version%-x86_64.AppImage}
+          echo "app_version=$version" >> "$GITHUB_OUTPUT"
+          ls -l out
+
+      # The AppImage uses the system's GTK and WebKit, so install what a
+      # desktop would have.
+      - name: Smoke test
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends xvfb xauth \
+            libwebkit2gtk-4.1-0 libgtk-3-0t64 libtiff6 gstreamer1.0-libav libglu1-mesa
+          APPIMAGE_EXTRACT_AND_RUN=1 scripts/smoke-test.sh out/*.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: out/
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: [check, flatpak, appimage]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      APP_VERSION: ${{ needs.appimage.outputs.app_version }}
+    steps:
+      - name: Check the app version
+        run: |
+          [[ $APP_VERSION =~ ^[0-9]+(\.[0-9]+)+$ ]] ||
+            { echo "::error::Unexpected app version '$APP_VERSION'"; exit 1; }
+
+      # Credentials are not persisted: the pushes below build their own URL.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the tools that move OSTree commits around
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends flatpak ostree
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: flatpak-repo
+          path: incoming/flatpak-repo
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: appimage
+          path: incoming/appimage
+
+      # The build comes from a job that ran Anycubic's binary, and this job is
+      # about to load the signing key. So it is unpacked outside the checkout,
+      # where it cannot replace the scripts that run next, and it may hold
+      # nothing but plain files and directories under repo/.
+      - name: Unpack the build
+        run: |
+          tarball=incoming/flatpak-repo/flatpak-repo.tar
+          tar -tf "$tarball" > "$RUNNER_TEMP/names"
+          tar -tvf "$tarball" | cut -c1 > "$RUNNER_TEMP/types"
+          if grep -qv '^repo/' "$RUNNER_TEMP/names" ||
+             grep -qE '(^|/)\.\.(/|$)' "$RUNNER_TEMP/names" ||
+             grep -qv '^[-d]$' "$RUNNER_TEMP/types"; then
+            echo "::error::flatpak-repo.tar holds something other than files and directories under repo/"
+            exit 1
+          fi
+          mkdir "$RUNNER_TEMP/built"
+          tar -xf "$tarball" -C "$RUNNER_TEMP/built" --no-same-owner
+          echo "BUILT_REPO=$RUNNER_TEMP/built/repo" >> "$GITHUB_ENV"
+
+      # The published repository holds the previous release, and this build
+      # has to be committed on top of it. It is absent on the first run only.
+      - name: Fetch the published repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          remote="https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY"
+          # Tell "no gh-pages yet" (exit 2) apart from a failed request, which
+          # must not be mistaken for a first run and start an empty repository.
+          if git ls-remote --exit-code --heads "$remote" gh-pages >/dev/null; then
+            git clone --quiet --depth 1 --branch gh-pages "$remote" site
+          else
+            [ $? -eq 2 ] || exit 1
+            echo "No gh-pages branch yet; starting one."
+            mkdir site
+          fi
+
+      - name: Unlock the signing key
+        env:
+          SIGNING_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "::error::FLATPAK_GPG_PRIVATE_KEY is not set; see flatpak/HOWTO.md, 'Publishing'."
+            exit 1
+          fi
+
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"
+          printf '%s' "$SIGNING_KEY" | base64 -d | gpg --batch --quiet --import
+
+          keyid=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')
+
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "GPG_KEY_ID=$keyid" >> "$GITHUB_ENV"
+
+      - name: Add this build to the Flatpak repository
+        run: scripts/publish-flatpak.sh "$BUILT_REPO" site "AnycubicSlicer-$APP_VERSION.flatpak"
+
+      - name: Record what was published
+        env:
+          DEB_SHA256: ${{ needs.check.outputs.deb_sha256 }}
+          DEB_VERSION: ${{ needs.check.outputs.deb_version }}
+          PACKAGING: ${{ needs.check.outputs.packaging }}
+        run: |
+          cat > site/latest.env <<EOF
+          APP_VERSION=$APP_VERSION
+          DEB_VERSION=$DEB_VERSION
+          DEB_SHA256=$DEB_SHA256
+          PACKAGING=$PACKAGING
+          SOURCE_COMMIT=$GITHUB_SHA
+          EOF
+
+      - name: Publish the repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd site
+          rm -rf .git
+
+          # A fresh orphan commit every time, force-pushed. The repository's
+          # own history lives inside OSTree; a git history of it as well would
+          # grow every clone by ~150 MB per release and serve nobody.
+          git init --quiet --initial-branch=gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit --quiet -m "Publish $APP_VERSION (${GITHUB_SHA:0:7})"
+          git push --quiet --force \
+            "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" gh-pages
+
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEB_SHA256: ${{ needs.check.outputs.deb_sha256 }}
+          DEB_VERSION: ${{ needs.check.outputs.deb_version }}
+        run: |
+          assets=(
+            "AnycubicSlicer-$APP_VERSION.flatpak"
+            incoming/appimage/AnycubicSlicer-"$APP_VERSION"-x86_64.AppImage
+            incoming/appimage/AnycubicSlicer-"$APP_VERSION"-x86_64.AppImage.zsync
+          )
+
+          notes=$(cat <<NOTES
+          Anycubic Slicer Next $APP_VERSION, repackaged from Anycubic's \`$DEB_VERSION\` .deb (SHA256 \`$DEB_SHA256\`).
+
+          ### Flatpak
+
+          Add the repository once and every later version arrives through \`flatpak update\` and your software center:
+
+          \`\`\`sh
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak remote-add --user --if-not-exists --from \\
+            anycubic-slicer-next $SITE_URL/anycubic-slicer-next.flatpakrepo
+
+          flatpak install --user anycubic-slicer-next $APP_ID
+          \`\`\`
+
+          The first line is there for the GNOME runtime the app needs: a per-user install only looks for it in per-user remotes.
+
+          Or install \`AnycubicSlicer-$APP_VERSION.flatpak\` below. It sets up the same updates.
+
+          Installed a \`.flatpak\` of 1.3.9.4 or older? Those cannot update. Install this one, then remove the old version, e.g. \`flatpak uninstall $APP_ID//1.3.9.4\` and \`flatpak uninstall --unused\`.
+
+          ### AppImage
+
+          Download \`AnycubicSlicer-$APP_VERSION-x86_64.AppImage\` and make it executable. It needs glibc 2.38+ and GLib 2.80+ (Ubuntu 24.04+, Fedora 40+, Debian 13+) and no longer needs \`libfuse2\`. Gear Lever and AppImageUpdate can keep it up to date.
+          NOTES
+          )
+
+          # Same app version again (new packaging, or a deb Anycubic reissued
+          # under the same version): replace the files and the notes, and keep
+          # the release with its download counts.
+          if gh release view "$APP_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$APP_VERSION" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$APP_VERSION" --repo "$GITHUB_REPOSITORY" --notes "$notes"
+            exit 0
+          fi
+
+          gh release create "$APP_VERSION" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$APP_VERSION" \
+            --notes "$notes" \
+            --latest
+
+  # Leaves the marker the check job looks for, so a build that fails is not
+  # retried (and reported) every hour.
+  remember-failure:
+    needs: [check, flatpak, appimage, publish]
+    if: failure() && needs.check.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: mkdir .build-failed && echo "$GITHUB_RUN_ID" > .build-failed/run-id
+
+      - uses: actions/cache/save@v4
+        with:
+          path: .build-failed
+          key: ${{ needs.check.outputs.failed_key }}
