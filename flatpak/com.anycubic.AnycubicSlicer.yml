@@ -68,9 +68,13 @@ modules:
         cat > /app/bin/anycubic-slicer-wrapper <<'WRAPPER'
         #!/usr/bin/env sh
 
-        # NVIDIA DMABUF workaround (from OrcaSlicer)
-        # Only disable DMABUF renderer when running with NVIDIA drivers
-        grep -q org.freedesktop.Platform.GL.nvidia /.flatpak-info && export WEBKIT_DISABLE_DMABUF_RENDERER=1
+        # WebKit's DMA-BUF renderer sets up a GL context of its own inside the
+        # app's process, and the slicer's own GL state does not survive that:
+        # web windows opened after start-up, such as the login window, come up
+        # black. OrcaSlicer, which this app derives from, fixed it in their
+        # source; here the binary is Anycubic's, so turn the renderer off.
+        # Set it to 0 yourself to get it back.
+        export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
 
         # Locale fix to prevent segfaults on systems with non-standard locales
         export LC_ALL=C.UTF-8

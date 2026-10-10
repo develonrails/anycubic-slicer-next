@@ -199,8 +199,8 @@ The wrapper script is modeled after OrcaSlicer's entrypoint:
 
 ```bash
 #!/usr/bin/env sh
-# Only disable DMABUF for NVIDIA (fixes white screen on NVIDIA GPUs)
-grep -q org.freedesktop.Platform.GL.nvidia /.flatpak-info && export WEBKIT_DISABLE_DMABUF_RENDERER=1
+# Turn off WebKit's DMA-BUF renderer (see below); WEBKIT_DISABLE_DMABUF_RENDERER=0 gets it back
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
 # UTF-8 locale to prevent segfaults
 export LC_ALL=C.UTF-8
 # Find bundled application libraries
@@ -210,10 +210,18 @@ exec /app/bin/AnycubicSlicerNext "$@"
 ```
 
 **Key design decisions:**
-- DMABUF is only disabled for NVIDIA (unconditionally disabling it can cause issues on other GPUs)
+- DMABUF is disabled for everyone, not just NVIDIA (see below)
 - `LC_ALL=C.UTF-8` instead of `LC_ALL=C` (preserves UTF-8 support)
 - `cd /app` is needed for resource path resolution (fonts, profiles, etc.)
 - No contradictory compositing mode flags (the old build had both FORCE and DISABLE which caused issues)
+
+### The DMA-BUF renderer
+
+WebKit's DMA-BUF renderer sets up a GL context of its own inside the app's process. The slicer's own GL state does not survive that, and web windows opened after start-up come up black -- the login window is the one people hit. It is not GPU-specific: it was reported on NVIDIA, and reproduced here on AMD (Radeon RX 9060 XT, Mesa 26.2, Wayland/XWayland, GNOME 51 runtime with WebKitGTK 2.54.1).
+
+OrcaSlicer, which this app derives from, [fixed it in their own source](https://github.com/OrcaSlicer/OrcaSlicer/pull/16109) by making their GL context current before touching their buffers. That is not available here, because the binary is Anycubic's. Turning the renderer off is the workaround their reporter confirmed, and it is what the AppImage has always done.
+
+The wrapper only sets a default, so `WEBKIT_DISABLE_DMABUF_RENDERER=0 flatpak run com.anycubic.AnycubicSlicer` gets the renderer back for anyone who wants to test whether a newer runtime has fixed it.
 
 ### Fonts
 
@@ -244,10 +252,9 @@ To try a new .deb by hand first, follow the [Build Process](#build-process).
 
 ## Troubleshooting
 
-### White/blank screen
-- This is typically a WebKit DMABUF rendering issue
-- The wrapper script conditionally disables DMABUF for NVIDIA GPUs
-- If you still see a white screen on non-NVIDIA GPUs, try adding `WEBKIT_DISABLE_DMABUF_RENDERER=1` to the wrapper unconditionally
+### Black or blank web window (login, setup wizard, model library)
+- WebKit's DMA-BUF renderer; the wrapper disables it for everyone (see [The DMA-BUF renderer](#the-dma-buf-renderer))
+- If it comes back, check that the wrapper in the built app still exports `WEBKIT_DISABLE_DMABUF_RENDERER`: `flatpak run --command=cat com.anycubic.AnycubicSlicer /app/bin/anycubic-slicer-wrapper`
 - Ensure you're using GNOME Platform 51 or newer
 
 ### Fonts not loading (returns 0)
