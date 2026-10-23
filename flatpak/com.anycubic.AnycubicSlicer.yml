@@ -82,6 +82,28 @@ modules:
         # Library path for bundled application libraries
         export LD_LIBRARY_PATH="/app/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+        # File managers (and Flatpak's %U file-forwarding) hand model files to
+        # us as file:// URIs, e.g. file:///home/me/part.stl. The slicer treats
+        # every argument as a literal path and can't read a URI ("No such file:
+        # file://..."), so double-clicking a model opened an empty app (issue
+        # #13). Convert any file:// argument to a plain, percent-decoded path;
+        # leave plain paths and the acnext:// login scheme untouched.
+        convert_file_uri() {
+            u=${1#file://}
+            case $u in
+                /*) : ;;         # file:///path -> /path
+                *) u=/${u#*/} ;; # file://host/path -> /path
+            esac
+            printf '%b' "$(printf '%s' "$u" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
+        }
+        for arg in "$@"; do
+            case $arg in
+                file://*) set -- "$@" "$(convert_file_uri "$arg")" ;;
+                *) set -- "$@" "$arg" ;;
+            esac
+            shift
+        done
+
         cd /app || exit 1
         exec /app/bin/AnycubicSlicerNext "$@"
         WRAPPER
