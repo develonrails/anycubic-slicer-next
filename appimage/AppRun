@@ -38,4 +38,25 @@ export WEBKIT_DISABLE_DMABUF_RENDERER=1
 export WEBKIT_FORCE_COMPOSITING_MODE=1
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 
+# File managers hand model files to a %U desktop entry as file:// URIs, e.g.
+# file:///home/me/part.stl. The slicer treats every argument as a literal path
+# and can't read a URI ("No such file: file://..."), so double-clicking a model
+# opened an empty app (issue #13). Convert any file:// argument to a plain,
+# percent-decoded path; leave plain paths and the acnext:// login scheme alone.
+convert_file_uri() {
+    u=${1#file://}
+    case $u in
+        /*) : ;;         # file:///path -> /path
+        *) u=/${u#*/} ;; # file://host/path -> /path
+    esac
+    printf '%b' "$(printf '%s' "$u" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
+}
+for arg in "$@"; do
+    case $arg in
+        file://*) set -- "$@" "$(convert_file_uri "$arg")" ;;
+        *) set -- "$@" "$arg" ;;
+    esac
+    shift
+done
+
 exec "$DIR/bin/AnycubicSlicerNext" "$@"
