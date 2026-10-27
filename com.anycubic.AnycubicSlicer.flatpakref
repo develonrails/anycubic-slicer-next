@@ -1,0 +1,11 @@
+[Flatpak Ref]
+Name=com.anycubic.AnycubicSlicer
+Branch=stable
+Title=Anycubic Slicer Next
+Url=https://develonrails.github.io/anycubic-slicer-next/repo/
+SuggestRemoteName=anycubic-slicer-next
+Homepage=https://github.com/develonrails/anycubic-slicer-next
+Icon=https://develonrails.github.io/anycubic-slicer-next/icon.svg
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
+GPGKey=mDMEaspE0xYJKwYBBAHaRw8BAQdADwkVKumG/ItnMRMTjHXWxsJP4eaWP1S0CJHAiCU2Jby0VWFueWN1YmljLXNsaWNlci1uZXh0IHJlcG9zaXRvcnkgc2lnbmluZyA8YW55Y3ViaWMtc2xpY2VyLW5leHRAZGV2ZWxvbnJhaWxzLmdpdGh1Yi5pbz6IkwQTFgoAOxYhBPJGb4nqa1gnZyY56xJj5Cr+fyxhBQJqykTTAhsDBQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEBJj5Cr+fyxhZBUA/jNRN2+HhGiVodKugrM3BHX5WDsLSKq1qqVrEMRNC/H+AQC457aRUzbBpIsyjUAUEs7SZP53YHHmf6nPN+CqZZ5cCg==

@@ -1,0 +1,9 @@
+[Flatpak Repo]
+Title=Anycubic Slicer Next
+Url=https://develonrails.github.io/anycubic-slicer-next/repo/
+Homepage=https://github.com/develonrails/anycubic-slicer-next
+Comment=Unofficial Flatpak of Anycubic Slicer Next
+Description=Anycubic Slicer Next, repackaged from Anycubic's .deb and updated whenever Anycubic publishes a new version.
+Icon=https://develonrails.github.io/anycubic-slicer-next/icon.svg
+DefaultBranch=stable
+GPGKey=mDMEaspE0xYJKwYBBAHaRw8BAQdADwkVKumG/ItnMRMTjHXWxsJP4eaWP1S0CJHAiCU2Jby0VWFueWN1YmljLXNsaWNlci1uZXh0IHJlcG9zaXRvcnkgc2lnbmluZyA8YW55Y3ViaWMtc2xpY2VyLW5leHRAZGV2ZWxvbnJhaWxzLmdpdGh1Yi5pbz6IkwQTFgoAOxYhBPJGb4nqa1gnZyY56xJj5Cr+fyxhBQJqykTTAhsDBQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJEBJj5Cr+fyxhZBUA/jNRN2+HhGiVodKugrM3BHX5WDsLSKq1qqVrEMRNC/H+AQC457aRUzbBpIsyjUAUEs7SZP53YHHmf6nPN+CqZZ5cCg==
